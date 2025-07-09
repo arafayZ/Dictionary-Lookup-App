@@ -1,0 +1,38 @@
+using System;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+
+public static class EncryptedLogger
+{
+    private static readonly string EncryptionKey = "MySuperSecretKey!"; // Use a secure key
+
+    public static void Log(string message)
+    {
+        string encrypted = Encrypt(message);
+        string fileName = $"encrypted_{DateTime.Now:yyyy-MM-dd}.txt";
+        File.AppendAllText(fileName, encrypted + Environment.NewLine);
+    }
+
+    private static string Encrypt(string plainText)
+    {
+        byte[] key = Encoding.UTF8.GetBytes(EncryptionKey.PadRight(32)); // AES-256 key
+        using (Aes aesAlg = Aes.Create())
+        {
+            aesAlg.Key = key;
+            aesAlg.GenerateIV(); // Generate a new IV for each message
+            ICryptoTransform encryptor = aesAlg.CreateEncryptor(aesAlg.Key, aesAlg.IV);
+
+            using (var ms = new MemoryStream())
+            {
+                ms.Write(aesAlg.IV, 0, aesAlg.IV.Length); // Prepend IV to the output
+                using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+                using (var sw = new StreamWriter(cs))
+                    sw.Write(plainText);
+
+                return Convert.ToBase64String(ms.ToArray());
+            }
+        }
+    }
+}
+

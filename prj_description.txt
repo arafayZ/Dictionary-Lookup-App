@@ -1,0 +1,1 @@
+This project is a C# Windows Forms dictionary application that retrieves word definitions, phonetics, synonyms, and antonyms using an external API. It features a modern UI with real-time search and formatted results for better readability. The application ensures smooth performance with efficient API handling and error management.

@@ -1,0 +1,86 @@
+using System;
+using System.Data.SqlClient;
+using System.Windows.Forms;
+
+namespace DictionaryLookup
+{
+    public partial class LoginForm : Form
+    {
+        public LoginForm()
+        {
+            InitializeComponent();
+
+        }
+
+        string connectionString = "Data Source=localhost;Initial Catalog=DictionaryDB;Integrated Security=True";
+
+        private void btnLogin_Click(object sender, EventArgs e)
+        {
+            string email = txtEmail.Text.Trim();
+            string password = txtPassword.Text.Trim();
+
+
+            if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("Please enter email and password.");
+                return;
+            }
+
+            using (SqlConnection con = new SqlConnection(connectionString))
+            {
+                string query = "SELECT COUNT(*) FROM Users WHERE Email=@Email AND Password=@Password";
+                SqlCommand cmd = new SqlCommand(query, con);
+                cmd.Parameters.AddWithValue("@Email", email);
+                cmd.Parameters.AddWithValue("@Password", password);
+
+                try
+                {
+                    con.Open();
+                    int count = (int)cmd.ExecuteScalar();
+                    if (count == 1)
+                    {
+                        // Get the user's name from the DB
+                        string getNameQuery = "SELECT Username FROM Users WHERE Email=@Email";
+                        SqlCommand getNameCmd = new SqlCommand(getNameQuery, con);
+                        getNameCmd.Parameters.AddWithValue("@Email", email);
+                        string Username = (string)getNameCmd.ExecuteScalar();
+
+                        var mainForm = new Form1(Username, email);
+                        mainForm.Show();
+                        this.Hide();
+                    }
+                    else
+                    {
+                        MessageBox.Show("Invalid email or password.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error: " + ex.Message);
+                }
+            }
+        }
+
+
+        private void linkToRegister_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            this.Hide();
+            RegisterForm register = new RegisterForm();
+            register.Show();
+        }
+
+        private void chkShowPassword_CheckedChanged(object sender, EventArgs e)
+        {
+            if (chkShowPassword.Checked)
+            {
+                txtPassword.PasswordChar = '\0'; // Show password
+            }
+            else
+            {
+                txtPassword.PasswordChar = '*'; // Hide password
+            }
+        }
+
+        
+    }
+}

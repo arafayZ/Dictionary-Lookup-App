@@ -1,0 +1,415 @@
+using System;
+using System.Net.Http;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using Newtonsoft.Json.Linq;
+using System.Drawing;
+using System.Collections.Generic;
+using System.Linq;
+using Serilog;
+using Newtonsoft.Json;
+
+namespace DictionaryLookup
+{
+    public partial class Form1 : Form
+    {
+        private string _userName;
+        private string _userEmail;
+        public Form1(string userName, string userEmail)
+        {
+            InitializeComponent();
+            _userName = userName;
+            _userEmail = userEmail;
+
+            button1.Click += new EventHandler(btnSearch_Click);
+
+            //Logging
+            // Serilog configuration with enriched context
+            Log.Logger = new LoggerConfiguration()
+                .Enrich.FromLogContext()
+                .WriteTo.File("log.txt", rollingInterval: RollingInterval.Day,
+                    outputTemplate: "[{Timestamp:yyyy-MM-dd hh:mm:ss tt} {Level:u3}] {UserName} ({UserEmail}) - {Message:lj}{NewLine}{Exception}")
+                .CreateLogger();
+
+            // Start API health monitoring in the background
+            Task.Run(() => MonitorApiHealth());
+
+        }
+        //Asynchronous API
+        private async Task<(string, string)> GetDefinition(string word)
+        {
+            return await Task.Run(async () =>
+            {
+                string primaryApi = $"https://api.dictionaryapi.dev/api/v2/entries/en/{word}";
+                string fallbackApi = $"https://api.datamuse.com/words?ml={word}&max=5&md=p";
+
+                using (HttpClient client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) })
+                {
+                    try
+                    {
+                        string msgStart = $"Starting request to dictionary API for word: {word}";
+                        Log.Information(msgStart);
+                        EncryptedLogger.Log(msgStart);
+
+                        var response = await client.GetAsync(primaryApi);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var json = await response.Content.ReadAsStringAsync();
+                            string msgSuccess = $"Primary API success for: {word}, Response: Success.";
+                            Log.Information(msgSuccess);
+                            EncryptedLogger.Log(msgSuccess);// ✅ Encrypted logging
+                            return (json, "dictionaryapi");
+                        }
+                        else if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            string msgNotFound = $"Primary API - Word not found: {word}";
+                            Log.Warning(msgNotFound);
+                            EncryptedLogger.Log(msgNotFound);// ✅ Encrypted logging
+                            return ("NOT_FOUND", "dictionaryapi");
+                        }
+                        else
+                        {
+                            string msgFail = $"Primary API failed - Status: {response.StatusCode} for word: {word}";
+                            Log.Warning(msgFail);
+                            EncryptedLogger.Log(msgFail);// ✅ Encrypted logging
+                        }
+                    }
+                    catch (TaskCanceledException tex) when (tex.InnerException is TimeoutException)
+                    {
+                        string msgTimeout = $"Primary API timeout for {word}. Exception: {tex.Message}";
+                        Log.Warning(msgTimeout);
+                        EncryptedLogger.Log(msgTimeout);// ✅ Encrypted logging
+                    }
+                    catch (Exception ex)
+                    {
+                        string msgError = $"Primary API error for {word}: {ex.Message}";
+                        Log.Error(msgError);
+                        EncryptedLogger.Log(msgError);// ✅ Encrypted logging
+                    }
+
+                    try
+                    {
+                        string msgFallbackStart = $"Fallback API used for word: {word}";
+                        Log.Information(msgFallbackStart);
+                        EncryptedLogger.Log(msgFallbackStart);// ✅ Encrypted logging
+
+                        var fallbackResponse = await client.GetAsync(fallbackApi);
+                        if (fallbackResponse.IsSuccessStatusCode)
+                        {
+                            var json = await fallbackResponse.Content.ReadAsStringAsync();
+                            string msgFallbackSuccess = $"Fallback API success for: {word}, Response: Success.";
+                            Log.Information(msgFallbackSuccess);
+                            EncryptedLogger.Log(msgFallbackSuccess);// ✅ Encrypted logging
+                            return (json, "datamuse");
+                        }
+                        else
+                        {
+                            string msgFallbackFail = $"Fallback API failed - Status: {fallbackResponse.StatusCode} for word: {word}";
+                            Log.Warning(msgFallbackFail);
+                            EncryptedLogger.Log(msgFallbackFail);// ✅ Encrypted logging
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        string msgFallbackError = $"Fallback API error for {word}: {ex.Message}";
+                        Log.Error(msgFallbackError);
+                        EncryptedLogger.Log(msgFallbackError);// ✅ Encrypted logging
+                    }
+
+                    return (null, null);
+                }
+            });
+        }
+
+
+
+        private async void btnSearch_Click(object sender, EventArgs e)
+        {
+            string word = textBox1.Text.Trim();
+            if (string.IsNullOrEmpty(word))
+            {
+                MessageBox.Show("Please enter a word.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using (Serilog.Context.LogContext.PushProperty("UserName", _userName))
+            using (Serilog.Context.LogContext.PushProperty("UserEmail", _userEmail))
+            {
+                string infoMsg = $"User searched for: {word}";
+                Log.Information(infoMsg);
+                EncryptedLogger.Log(infoMsg); // ✅ Encrypted logging
+
+                var (jsonResponse, source) = await GetDefinition(word);
+
+                if (jsonResponse == "NOT_FOUND")
+                {
+                    MessageBox.Show($"The word \"{word}\" was not found.", "Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                if (jsonResponse == null)
+                {
+                    MessageBox.Show("API timeout or failure. Please try again later.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                try
+                {
+                    if (source == "dictionaryapi")
+                    {
+                        JArray jsonArray = JArray.Parse(jsonResponse);
+                        if (jsonArray.Count == 0)
+                        {
+                            MessageBox.Show($"No result found for \"{word}\".", "Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+
+                        JObject wordData = (JObject)jsonArray[0];
+                        string wordText = wordData["word"].ToString();
+                        string phonetics = "N/A";
+
+                        if (wordData["phonetics"].HasValues)
+                        {
+                            foreach (var phonetic in wordData["phonetics"])
+                            {
+                                if (phonetic["text"] != null)
+                                {
+                                    phonetics = phonetic["text"].ToString();
+                                    break;
+                                }
+                            }
+                        }
+
+                        var meaningsList = new List<string>();
+                        var partsOfSpeechList = new List<string>();
+                        var synonymsList = new List<string>();
+                        var antonymsList = new List<string>();
+
+                        foreach (var meaning in wordData["meanings"])
+                        {
+                            string partOfSpeech = meaning["partOfSpeech"]?.ToString();
+                            if (!string.IsNullOrEmpty(partOfSpeech))
+                                partsOfSpeechList.Add(partOfSpeech);
+
+                            foreach (var definition in meaning["definitions"])
+                            {
+                                meaningsList.Add($"({partOfSpeech}) {definition["definition"]}");
+
+                                if (definition["synonyms"] is JArray synArray)
+                                    synonymsList.AddRange(synArray.Select(s => s.ToString()));
+
+                                if (definition["antonyms"] is JArray antArray)
+                                    antonymsList.AddRange(antArray.Select(a => a.ToString()));
+                            }
+                        }
+
+                        partsOfSpeechList = partsOfSpeechList.Distinct().ToList();
+                        DisplayDefinition(wordText, phonetics, partsOfSpeechList, meaningsList, synonymsList, antonymsList);
+                    }
+                    else if (source == "datamuse")
+                    {
+                        JArray jsonArray = JArray.Parse(jsonResponse);
+
+                        // Extract top 5 suggestions
+                        var meaningsList = jsonArray
+                            .Select(item => item["word"]?.ToString())
+                            .Where(s => !string.IsNullOrEmpty(s))
+                            .Take(5)
+                            .ToList();
+
+                        // Extract and map part-of-speech tags
+                        var partsOfSpeechList = jsonArray
+                            .SelectMany(item => item["tags"] != null ? item["tags"] : new JArray())
+                            .Distinct()
+                            .Select(tag => tag.ToString())
+                            .Where(tag => tag == "n" || tag == "v" || tag == "adj" || tag == "adv" || tag == "prop")
+                            .Select(GetFullPOS)
+                            .ToList();
+
+                        if (meaningsList.Count == 0)
+                        {
+                            MessageBox.Show($"No suggestions found for \"{word}\".", "No Suggestions", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+
+                        // Display using your full method
+                        DisplayDefinition(word, "N/A", partsOfSpeechList, meaningsList, new List<string>(), new List<string>());
+                    }
+
+                }
+                catch (JsonException ex)
+                {
+                    Log.Error($"JSON Parsing Error: {ex.Message}");
+                    MessageBox.Show("Error parsing API response.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"Unhandled Error: {ex.Message}");
+                    MessageBox.Show("An unexpected error occurred.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+            // Fallback API helper method
+            private string GetFullPOS(string posTag)
+            {
+                // Here you can map abbreviated POS tags to full names if needed
+                switch (posTag)
+                {
+                    case "n":
+                        return "Noun";
+                    case "v":
+                        return "Verb";
+                    case "adj":
+                        return "Adjective";
+                    case "adv":
+                        return "Adverb";
+                    case "prop":
+                        return "Proper Noun";
+                    default:
+                        return posTag;  // If no mapping is found, return the original tag
+                }
+            }
+
+        // Real Time Monitoring
+        private async Task MonitorApiHealth()
+        {
+            string primaryApi = "https://api.dictionaryapi.dev/api/v2/entries/en/hello";
+            string fallbackApi = "https://api.datamuse.com/words?ml=hello&max=5&md=p";
+
+            while (true)
+            {
+                try
+                {
+                    using (HttpClient client = new HttpClient())
+                    {
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+                        // Monitor Primary API
+                        HttpResponseMessage response = await client.GetAsync(primaryApi);
+                        watch.Stop();
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            long responseTime = watch.ElapsedMilliseconds;
+                            string msg = $"Primary API {(responseTime > 1000 ? "slow" : "GOOD")}: {responseTime} ms";
+
+                            if (responseTime > 1000)
+                                Log.Warning(msg);
+                            else
+                                Log.Information(msg);
+
+                            EncryptedLogger.Log(msg); // ✅ Encrypted logging
+                        }
+                        else
+                        {
+                            string errorMsg = $"Primary API error: {response.StatusCode}";
+                            Log.Error(errorMsg);
+                            EncryptedLogger.Log(errorMsg); // ✅ Encrypted logging
+                        }
+
+                        // Reset stopwatch
+                        watch.Restart();
+
+                        // Monitor Fallback API
+                        HttpResponseMessage fallbackResponse = await client.GetAsync(fallbackApi);
+                        watch.Stop();
+
+                        if (fallbackResponse.IsSuccessStatusCode)
+                        {
+                            long responseTime = watch.ElapsedMilliseconds;
+                            string msg = $"Fallback API {(responseTime > 1000 ? "slow" : "OK")}: {responseTime} ms";
+
+                            if (responseTime > 1000)
+                                Log.Warning(msg);
+                            else
+                                Log.Information(msg);
+
+                            EncryptedLogger.Log(msg); // ✅ Encrypted logging
+                        }
+                        else
+                        {
+                            string errorMsg = $"Fallback API error: {fallbackResponse.StatusCode}";
+                            Log.Error(errorMsg);
+                            EncryptedLogger.Log(errorMsg); // ✅ Encrypted logging
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    string exMsg = $"API exception: {ex.Message}";
+                    Log.Error(exMsg);
+                    EncryptedLogger.Log(exMsg); // ✅ Encrypted logging
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(30));
+            }
+        }
+
+        private void DisplayDefinition(string word, string phonetic, List<string> partsOfSpeech, List<string> meanings, List<string> synonyms, List<string> antonyms)
+        {
+            richTextBox1.Clear();
+
+            // Word
+            richTextBox1.SelectionFont = new Font("Segoe UI", 14, FontStyle.Bold);
+            richTextBox1.SelectionColor = Color.Cyan;
+            richTextBox1.AppendText($"Word: {word}\n\n");
+
+            // Phonetics
+            if (!string.IsNullOrEmpty(phonetic))
+            {
+                richTextBox1.SelectionFont = new Font("Segoe UI", 12, FontStyle.Bold);
+                richTextBox1.SelectionColor = Color.Orange;
+                richTextBox1.AppendText($"Phonetic: {phonetic}\n\n");
+            }
+
+            // Parts of Speech
+            if (partsOfSpeech.Any())
+            {
+                richTextBox1.SelectionFont = new Font("Segoe UI", 12, FontStyle.Bold);
+                richTextBox1.SelectionColor = Color.LightBlue;
+                richTextBox1.AppendText("Parts of Speech:\n");
+                richTextBox1.SelectionFont = new Font("Segoe UI", 11, FontStyle.Regular);
+                richTextBox1.SelectionColor = Color.White;
+                richTextBox1.AppendText(string.Join(", ", partsOfSpeech) + "\n\n");
+            }
+
+            // Meanings
+            if (meanings.Any())
+            {
+                richTextBox1.SelectionFont = new Font("Segoe UI", 12, FontStyle.Bold);
+                richTextBox1.SelectionColor = Color.Lime;
+                richTextBox1.AppendText("Meanings:\n");
+                richTextBox1.SelectionFont = new Font("Segoe UI", 11, FontStyle.Regular);
+                richTextBox1.SelectionColor = Color.White;
+                foreach (string meaning in meanings)
+                {
+                    richTextBox1.AppendText($"• {meaning}\n");
+                }
+                richTextBox1.AppendText("\n");
+            }
+
+            // Synonyms
+            if (synonyms.Any())
+            {
+                richTextBox1.SelectionFont = new Font("Segoe UI", 12, FontStyle.Bold);
+                richTextBox1.SelectionColor = Color.Yellow;
+                richTextBox1.AppendText("Synonyms:\n");
+                richTextBox1.SelectionFont = new Font("Segoe UI", 11, FontStyle.Regular);
+                richTextBox1.SelectionColor = Color.White;
+                richTextBox1.AppendText(string.Join(", ", synonyms.Distinct()) + "\n\n");
+            }
+
+            // Antonyms
+            if (antonyms.Any())
+            {
+                richTextBox1.SelectionFont = new Font("Segoe UI", 12, FontStyle.Bold);
+                richTextBox1.SelectionColor = Color.Yellow;
+                richTextBox1.AppendText("Antonyms:\n");
+                richTextBox1.SelectionFont = new Font("Segoe UI", 11, FontStyle.Regular);
+                richTextBox1.SelectionColor = Color.White;
+                richTextBox1.AppendText(string.Join(", ", antonyms.Distinct()) + "\n\n");
+            }
+        }
+    }
+}

@@ -1,0 +1,87 @@
+using System;
+using System.Data.SqlClient;
+using System.Windows.Forms;
+
+namespace DictionaryLookup
+{
+    public partial class RegisterForm : Form
+    {
+        public RegisterForm()
+        {
+            InitializeComponent();
+        }
+
+        string connectionString = "Data Source=localhost;Initial Catalog=DictionaryDB;Integrated Security=True";
+
+        private void btnRegister_Click(object sender, EventArgs e)
+        {
+            string username = txtUsername.Text.Trim();
+            string email = txtEmail.Text.Trim();
+            string password = txtPassword.Text.Trim();
+
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
+            {
+                MessageBox.Show("All fields are required.");
+                return;
+            }
+
+            using (SqlConnection con = new SqlConnection(connectionString))
+            {
+                try
+                {
+                    con.Open();
+
+                    // Check if the email already exists
+                    string checkEmailQuery = "SELECT COUNT(*) FROM Users WHERE Email = @Email";
+                    SqlCommand checkCmd = new SqlCommand(checkEmailQuery, con);
+                    checkCmd.Parameters.AddWithValue("@Email", email);
+                    int emailExists = (int)checkCmd.ExecuteScalar();
+
+                    if (emailExists > 0)
+                    {
+                        MessageBox.Show("This email is already registered. Please use a different email.", "Duplicate Email", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    // Insert new user
+                    string query = "INSERT INTO Users (Username, Email, Password) VALUES (@Username, @Email, @Password)";
+                    SqlCommand cmd = new SqlCommand(query, con);
+                    cmd.Parameters.AddWithValue("@Username", username);
+                    cmd.Parameters.AddWithValue("@Email", email);
+                    cmd.Parameters.AddWithValue("@Password", password);
+
+                    cmd.ExecuteNonQuery();
+                    MessageBox.Show("Registration successful! You can now log in.");
+                    this.Hide();
+                    LoginForm login = new LoginForm();
+                    login.Show();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error: " + ex.Message);
+                }
+            }
+        }
+
+
+        private void linkToLogin_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            this.Hide();
+            LoginForm login = new LoginForm();
+            login.Show();
+        }
+
+
+        private void chkShowPassword_CheckedChanged(object sender, EventArgs e)
+        {
+            if (chkShowPassword.Checked)
+            {
+                txtPassword.PasswordChar = '\0'; // Show password
+            }
+            else
+            {
+                txtPassword.PasswordChar = '*'; // Hide password
+            }
+        }
+    }
+}
